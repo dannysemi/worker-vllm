@@ -1,12 +1,11 @@
 #!/bin/bash
 
-git clone https://github.com/runpod/vllm-fork-for-sls-worker.git
+git clone https://gitlab.com/semificial/vllm-sls-gguf
 
-cp -r vllm-fork-for-sls-worker vllm-12.1.0
-cp -r vllm-fork-for-sls-worker vllm-11.8.0
-rm -rf vllm-fork-for-sls-worker
+cp -r vllm-sls-gguf vllm-12.1.0
+rm -rf vllm-sls-gguf
 
-cd vllm-11.8.0
-git checkout cuda11.8
+cd vllm-12.1.0
+git checkout gptq_hf
 
 echo "vLLM Base Image Builder Setup Complete."
