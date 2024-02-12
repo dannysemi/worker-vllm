@@ -13,9 +13,12 @@ from dotenv import load_dotenv
 
 
 class Tokenizer:
-    def __init__(self, model_name: str):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.has_chat_template = bool(self.tokenizer.chat_template)
+    def __init__(self, tokenizer_name_or_path, tokenizer_revision, trust_remote_code):
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path, revision=tokenizer_revision, trust_remote_code=trust_remote_code)
+        self.custom_chat_template = os.getenv("CUSTOM_CHAT_TEMPLATE")
+        self.has_chat_template = bool(self.tokenizer.chat_template) or bool(self.custom_chat_template)
+        if self.custom_chat_template and isinstance(self.custom_chat_template, str):
+            self.tokenizer.chat_template = self.custom_chat_template
 
     def apply_chat_template(self, input: Union[str, list[dict[str, str]]]) -> str:
         if isinstance(input, list):
@@ -38,7 +41,7 @@ class vLLMEngine:
         load_dotenv() # For local development
         self.config = self._initialize_config()
         logging.info("vLLM config: %s", self.config)
-        self.tokenizer = Tokenizer(self.config["model"])
+        self.tokenizer = Tokenizer(self.config["tokenizer"], self.config["tokenizer_revision"], self.config["trust_remote_code"])
         self.llm = self._initialize_llm() if engine is None else engine
         self.openai_engine = self._initialize_openai()
         self.max_concurrency = int(os.getenv("MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY))
@@ -57,7 +60,6 @@ class vLLMEngine:
             yield batch
 
     async def generate_vllm(self, llm_input, validated_sampling_params, batch_size, stream, apply_chat_template, request_id: str) -> AsyncGenerator[dict, None]:
-        
         if apply_chat_template or isinstance(llm_input, list):
             llm_input = self.tokenizer.apply_chat_template(llm_input)
         validated_sampling_params = SamplingParams(**validated_sampling_params)
@@ -162,22 +164,27 @@ class vLLMEngine:
     
     def _initialize_config(self):
         quantization = self._get_quantization()
-        dtype = "half" if quantization else "auto"
+        model, download_dir, model_revision = self._get_model_info()
+        tokenizer_name_or_path, tokenizer_revision = self._get_tokenizer_info()
+        if not tokenizer_name_or_path:
+            tokenizer_name_or_path = model
+        
         return {
-            "model": os.getenv("MODEL_NAME"),
-            "revision": os.getenv("REVISION"),
-            "download_dir": os.getenv("MODEL_BASE_PATH", "/runpod-volume/"),
+            "model": model,
+            "revision": model_revision,
+            "download_dir": download_dir,
             "quantization": quantization,
             "load_format": os.getenv("LOAD_FORMAT", "auto"),
-            "dtype": dtype,
+            "dtype": "half" if quantization else "auto",
+            "tokenizer": tokenizer_name_or_path,
+            "tokenizer_revision": tokenizer_revision,
             "disable_log_stats": bool(int(os.getenv("DISABLE_LOG_STATS", 1))),
             "disable_log_requests": bool(int(os.getenv("DISABLE_LOG_REQUESTS", 1))),
             "trust_remote_code": bool(int(os.getenv("TRUST_REMOTE_CODE", 0))),
             "gpu_memory_utilization": float(os.getenv("GPU_MEMORY_UTILIZATION", 0.95)),
-            "max_parallel_loading_workers": int(os.getenv("MAX_PARALLEL_LOADING_WORKERS", count_physical_cores())),
+            "max_parallel_loading_workers": self._get_max_parallel_loading_workers(),
             "max_model_len": self._get_max_model_len(),
             "tensor_parallel_size": self._get_num_gpu_shard(),
-            "enforce_eager": True,
         }
 
     def _initialize_llm(self):
@@ -189,22 +196,42 @@ class vLLMEngine:
     
     def _initialize_openai(self):
         if bool(int(os.getenv("ALLOW_OPENAI_FORMAT", 1))) and self.tokenizer.has_chat_template:
-            return OpenAIServingChat(self.llm, self.config["model"], "assistant")
+            return OpenAIServingChat(self.llm, self.config["model"], "assistant", self.tokenizer.tokenizer.chat_template)
         else: 
             return None
-            
+        
+    def _get_max_parallel_loading_workers(self):
+        if int(os.getenv("TENSOR_PARALLEL_SIZE", 1)) > 1:
+            return None
+        else:
+            return int(os.getenv("MAX_PARALLEL_LOADING_WORKERS", count_physical_cores()))
+
+    def _get_model_info(self):
+        if os.path.exists("/local_model_path.txt"):
+            model, download_dir, revision = open("/local_model_path.txt", "r").read().strip(), None, None
+            logging.info("Using local model at %s", model)
+        else:
+            model, download_dir, revision = os.getenv("MODEL_NAME"), os.getenv("HF_HOME"), os.getenv("MODEL_REVISION") or None
+        return model, download_dir, revision
+    
+    def _get_tokenizer_info(self):
+        if os.path.exists("/local_tokenizer_path.txt"):
+            tokenizer_name_or_path, revision = open("/local_tokenizer_path.txt", "r").read().strip(), None
+            logging.info("Using local tokenizer at %s", tokenizer_name_or_path)
+        else:
+            tokenizer_name_or_path, revision = os.getenv("TOKENIZER_NAME"), os.getenv("TOKENIZER_REVISION") or None
+        return tokenizer_name_or_path, revision
         
     def _get_num_gpu_shard(self):
-        final_num_gpu_shard = 1
-        if bool(int(os.getenv("USE_TENSOR_PARALLEL", 0))):
-            env_num_gpu_shard = int(os.getenv("TENSOR_PARALLEL_SIZE", 1))
+        num_gpu_shard = int(os.getenv("TENSOR_PARALLEL_SIZE", 1))
+        if num_gpu_shard > 1:
             num_gpu_available = device_count()
-            final_num_gpu_shard = min(env_num_gpu_shard, num_gpu_available)
-            logging.info("Using %s GPU shards", final_num_gpu_shard)
-        return final_num_gpu_shard
+            num_gpu_shard = min(num_gpu_shard, num_gpu_available)
+            logging.info("Using %s GPU shards", num_gpu_shard)
+        return num_gpu_shard
     
     def _get_max_model_len(self):
-        max_model_len = os.getenv("MAX_MODEL_LEN")
+        max_model_len = os.getenv("MAX_MODEL_LENGTH")
         return int(max_model_len) if max_model_len is not None else None
     
     def _get_n_current_jobs(self):
