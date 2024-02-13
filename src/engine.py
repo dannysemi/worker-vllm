@@ -185,6 +185,7 @@ class vLLMEngine:
             "max_parallel_loading_workers": self._get_max_parallel_loading_workers(),
             "max_model_len": self._get_max_model_len(),
             "tensor_parallel_size": self._get_num_gpu_shard(),
+            "enforce_eager": bool(int(os.getenv("ENFORCE_EAGER", 0)))
         }
 
     def _initialize_llm(self):
