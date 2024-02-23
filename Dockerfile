@@ -1,4 +1,4 @@
-ARG WORKER_CUDA_VERSION=11.8.0
+ARG WORKER_CUDA_VERSION=12.1.0
 FROM runpod/worker-vllm:base-0.2.2-cuda${WORKER_CUDA_VERSION} AS vllm-base
 
 RUN apt-get update -y \
