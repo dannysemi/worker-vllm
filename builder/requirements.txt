@@ -7,3 +7,4 @@ huggingface-hub
 packaging
 typing-extensions==4.7.1
 pydantic
+cupy-cuda12x == 12.1.0  # Required for CUDA graphs. CUDA 11.8 users should install cupy-cuda11x instead.
